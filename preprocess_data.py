@@ -7,6 +7,7 @@ import io
 
 
 def include_game(game: chess.pgn.Game, min_elo: int = 1500) -> bool:
+    """Returns True/False value whether to include game in data"""
     try:
         return (
             game.headers.get("Termination") == "Normal"
@@ -18,6 +19,7 @@ def include_game(game: chess.pgn.Game, min_elo: int = 1500) -> bool:
 
 
 def fen_to_vector(fen: str) -> np.ndarray:
+    """Converts FEN string to vector"""
     board = chess.Board(fen)
 
     # Piece placement: 8x8x12
@@ -71,12 +73,12 @@ def fen_to_vector(fen: str) -> np.ndarray:
 
 
 def process_game(game: chess.pgn.Game) -> list[dict]:
+    """Applies vectorization to each game"""
     board = game.board()
     moves = []
     for move in game.mainline_moves():
         moves.append(
             {
-                # "board_fen": board.fen(),
                 **{k: v for k, v in enumerate(fen_to_vector(board.fen()).tolist())},
                 "next_move": board.san(move),
             }
@@ -86,6 +88,7 @@ def process_game(game: chess.pgn.Game) -> list[dict]:
 
 
 def downcast_ints_to_int8(df):
+    """Convert to int8 for better storage (we are training in int8)"""
     for col in df.select_dtypes(include=["int", "int64", "int32"]).columns:
         # Check if values fit in int8 range (-128 to 127)
         if df[col].min() >= -128 and df[col].max() <= 127:
@@ -94,6 +97,7 @@ def downcast_ints_to_int8(df):
 
 
 def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
+    """Apply pgn processing to a batch"""
     try:
         data = []
         for pgn in pgn_strs:
@@ -109,6 +113,7 @@ def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
+    """Parses .pgn data, into batches for processing"""
     with open(pgn_path, encoding="utf-8") as f:
         batch, current_pgn, last_line = [], "", ""
         for line in f:
@@ -132,6 +137,7 @@ def process_pgn_parallel(
     max_in_flight: int = 4,
     batch_size: int = 25000,
 ):
+    """Execute parallel processing of pgn parsing"""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     pool = mp.Pool(num_workers)
     results = []
@@ -146,7 +152,7 @@ def process_pgn_parallel(
         )
         game_count += len(batch)
 
-        # Keep no more than `max_in_flight` batches in memory
+        # Keep no more than max_in_flight batches in memory
         if len(results) >= max_in_flight:
             results.pop(0).get()
 
@@ -159,7 +165,6 @@ def process_pgn_parallel(
     print(f"Finished processing ~{game_count} games into {batch_id + 1} parquet files.")
 
 
-# Entry point
 if __name__ == "__main__":
     import argparse
 
