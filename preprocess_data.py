@@ -1,4 +1,4 @@
-import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -72,28 +72,27 @@ def fen_to_vector(fen: str) -> np.ndarray:
     return full_vector  # shape: (837,)
 
 
-def process_game(game: chess.pgn.Game) -> list[dict]:
+def process_game(game: chess.pgn.Game) -> pd.DataFrame:
     """Applies vectorization to each game"""
     board = game.board()
-    moves = []
+
+    board_vecs = []
+    next_moves = []
+
     for move in game.mainline_moves():
-        moves.append(
-            {
-                **{k: v for k, v in enumerate(fen_to_vector(board.fen()).tolist())},
-                "next_move": board.san(move),
-            }
-        )
+        board_vecs.append(fen_to_vector(board.fen()))
+        next_moves.append(board.san(move))
         board.push(move)
-    return moves
 
+    if board_vecs and next_moves:
+        vecs = np.stack(board_vecs, axis=0)
 
-def downcast_ints_to_int8(df):
-    """Convert to int8 for better storage (we are training in int8)"""
-    for col in df.select_dtypes(include=["int", "int64", "int32"]).columns:
-        # Check if values fit in int8 range (-128 to 127)
-        if df[col].min() >= -128 and df[col].max() <= 127:
-            df[col] = df[col].astype(np.int8)
-    return df
+        df = pd.DataFrame(vecs, dtype=np.int8)
+        df["next_move"] = next_moves
+
+        return df
+    else:
+        return pd.DataFrame()
 
 
 def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
@@ -103,14 +102,15 @@ def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
         for pgn in pgn_strs:
             game = chess.pgn.read_game(io.StringIO(pgn))
             if include_game(game):
-                data.extend(process_game(game))
+                df = process_game(game)
+                if not df.empty:
+                    data.append(df)
         if data:
-            df = pd.DataFrame(data)
-            df = downcast_ints_to_int8(df)
+            df = pd.concat(data)
             df.to_parquet(Path(output_dir) / f"chunk_{batch_id}.parquet", index=False)
     except Exception as e:
         print(f"[Batch {batch_id}] Error: {e}")
-    return None
+    return True
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
@@ -133,32 +133,46 @@ def stream_pgns(pgn_path: str, batch_size: int = 100):
 def process_pgn_parallel(
     pgn_path: str,
     output_dir: str,
-    max_games: int = None,
+    max_games: int | None = None,
     num_workers: int = 8,
-    batch_size: int = 25000,
+    batch_size: int = 25_000,
 ):
-    """Execute parallel processing of pgn parsing"""
+    """Processes data in parallel using generator and pool"""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    pool = mp.Pool(num_workers)
-    results = []
+
     game_count = 0
+    batch_iter = stream_pgns(pgn_path, batch_size=batch_size)
+    futures = []
 
-    for batch_id, batch in enumerate(stream_pgns(pgn_path, batch_size=batch_size)):
-        if max_games and game_count >= max_games:
-            break
+    with ProcessPoolExecutor(max_workers=num_workers) as pool:
+        for batch_id, batch in enumerate(batch_iter):
+            if max_games and game_count >= max_games:
+                break
 
-        results.append(
-            pool.apply_async(process_batch, args=(batch, output_dir, batch_id))
-        )
-        game_count += len(batch)
+            # submit work
+            fut = pool.submit(process_batch, batch, output_dir, batch_id)
+            futures.append(fut)
+            game_count += len(batch)
 
-    # Finish remaining jobs
-    for r in results:
-        r.get()
+            # back‑pressure: don’t queue more than ~2× the worker count
+            if len(futures) > num_workers * 2:
+                _drain_completed(futures)
 
-    pool.close()
-    pool.join()
-    print(f"Finished processing ~{game_count} games into {batch_id + 1} parquet files.")
+        # wait for the stragglers
+        _drain_completed(futures, wait_all=True)
+
+    print(f"Finished ~{game_count} games into {batch_id + 1} parquet files.")
+
+
+def _drain_completed(futures, wait_all=False):
+    """Pop completed futures, propagating exceptions immediately."""
+    pending = []
+    for fut in futures:
+        if fut.done() or wait_all:
+            fut.result()  # raises if worker failed
+        else:
+            pending.append(fut)
+    futures[:] = pending
 
 
 if __name__ == "__main__":
