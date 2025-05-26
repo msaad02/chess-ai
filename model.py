@@ -26,18 +26,18 @@ train_data, test_data = random_split(dataset, [0.8, 0.2])
 train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_data, batch_size=batch_size)
 
+
 # -- Model -----------------------------------
 class ImitationModel(torch.nn.Module):
     def __init__(self, in_features, out_features):
         super(ImitationModel, self).__init__()
         self.linear1 = torch.nn.Linear(in_features, 20_000)
         self.linear2 = torch.nn.Linear(20_000, 10_000)
-        self.linear3 = torch.nn.Linear(10_000, 10_000)
-        self.linear4 = torch.nn.Linear(10_000, 5_000)
-        self.linear5 = torch.nn.Linear(5_000, out_features)
+        self.linear3 = torch.nn.Linear(10_000, 5_000)
+        self.linear4 = torch.nn.Linear(5_000, out_features)
         self.activation = torch.nn.ReLU()
 
-    def forward(self, x): 
+    def forward(self, x):
         x = self.linear1(x)
         x = self.activation(x)
         x = self.linear2(x)
@@ -46,16 +46,11 @@ class ImitationModel(torch.nn.Module):
         x = self.activation(x)
         x = self.linear4(x)
         x = self.activation(x)
-        x = self.linear5(x)
-        x = self.activation(x)
-        
+
         return x
 
 
-model = ImitationModel(
-    in_features=x.shape[1],
-    out_features=len(idx_to_move)
-).to(device)
+model = ImitationModel(in_features=x.shape[1], out_features=len(idx_to_move)).to(device)
 
 
 # -- Logging -----------------------------------
@@ -67,17 +62,13 @@ run = wandb.init(
         "learning_rate": learning_rate,
         "batch_size": batch_size,
         "epochs": num_epochs,
-        "num_params": sum(p.numel() for p in model.parameters())
-    }
+        "num_params": sum(p.numel() for p in model.parameters()),
+    },
 )
-
 
 
 # -- Training -----------------------------------
-optimizer = torch.optim.Adam(
-    model.parameters(), 
-    lr=learning_rate
-)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
 loss_fn = torch.nn.CrossEntropyLoss()
 
@@ -98,10 +89,10 @@ for epoch in range(num_epochs):
         optimizer.step()
 
         batch_loss = loss.item()
-        total_loss += batch_loss 
+        total_loss += batch_loss
 
     loss = total_loss / len(train_loader)
-    
+
     run.log({"loss": loss})
 
 run.finish()

@@ -110,6 +110,7 @@ def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
             df.to_parquet(Path(output_dir) / f"chunk_{batch_id}.parquet", index=False)
     except Exception as e:
         print(f"[Batch {batch_id}] Error: {e}")
+    return None
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
@@ -134,7 +135,6 @@ def process_pgn_parallel(
     output_dir: str,
     max_games: int = None,
     num_workers: int = 8,
-    max_in_flight: int = 4,
     batch_size: int = 25000,
 ):
     """Execute parallel processing of pgn parsing"""
@@ -151,10 +151,6 @@ def process_pgn_parallel(
             pool.apply_async(process_batch, args=(batch, output_dir, batch_id))
         )
         game_count += len(batch)
-
-        # Keep no more than max_in_flight batches in memory
-        if len(results) >= max_in_flight:
-            results.pop(0).get()
 
     # Finish remaining jobs
     for r in results:
@@ -176,7 +172,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_games", type=int, default=None)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--batch_size", type=int, default=25000)
-    parser.add_argument("--max_in_flight", type=int, default=16)
     args = parser.parse_args()
 
     process_pgn_parallel(
@@ -184,6 +179,5 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         max_games=args.max_games,
         num_workers=args.workers,
-        max_in_flight=args.max_in_flight,
         batch_size=args.batch_size,
     )
