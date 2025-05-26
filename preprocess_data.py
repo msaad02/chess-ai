@@ -1,127 +1,127 @@
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
-import pandas as pd
+from tqdm import tqdm
 import numpy as np
 import chess.pgn
+import json
 import io
 
 
-def include_game(game: chess.pgn.Game, min_elo: int = 1500) -> bool:
-    """Returns True/False value whether to include game in data"""
+def include_game(pgn_str: str, min_elo: int = 1500) -> bool:
+    """Returns True/False value whether to include game in data
+
+    Used chess.pgn.Game before, but regex is more *far* more performant.
+    """
     try:
-        return (
-            game.headers.get("Termination") == "Normal"
-            and int(game.headers.get("WhiteElo", 0)) > min_elo
-            and int(game.headers.get("BlackElo", 0)) > min_elo
+        tmp = pgn_str.split("\n\n")[0].split("\n")
+        tmp = [x.replace("[", "").replace("]", "") for x in tmp]
+        headers = {k.strip(): v for k, v in [x.split('"')[:2] for x in tmp]}
+
+        return all(
+            [
+                headers["Termination"] == "Normal",
+                int(headers["WhiteElo"]) > min_elo,
+                int(headers["BlackElo"]) > min_elo,
+            ]
         )
     except:
         return False
 
 
-def fen_to_vector(fen: str) -> np.ndarray:
-    """Converts FEN string to vector"""
-    board = chess.Board(fen)
+def board_to_vector(
+    board: chess.Board, piece_tensor: np.ndarray, flattened: np.ndarray
+) -> np.ndarray:
+    """Converts chess.Board object to vector. Tensor parameters included to avoid recreation"""
 
-    # Piece placement: 8x8x12
-    piece_tensor = np.zeros((8, 8, 12), dtype=np.uint8)
-    piece_to_idx = {
-        "P": 0,
-        "N": 1,
-        "B": 2,
-        "R": 3,
-        "Q": 4,
-        "K": 5,
-        "p": 6,
-        "n": 7,
-        "b": 8,
-        "r": 9,
-        "q": 10,
-        "k": 11,
-    }
+    # Iterate over square, piece
+    for sq, pc in board.piece_map().items():
+        row, col = divmod(sq, 8)
+        idx = (pc.piece_type - 1) + (6 if pc.color else 0)
 
-    for square, piece in board.piece_map().items():
-        row = 7 - (square // 8)
-        col = square % 8
-        idx = piece_to_idx[piece.symbol()]
-        piece_tensor[row, col, idx] = 1
+        piece_tensor[7 - row, col, idx] = 1
 
-    # Turn: 1 bit
-    turn_tensor = np.array([int(board.turn)], dtype=np.uint8)
+    flattened[:768] = piece_tensor.ravel()
+    flattened[768] = board.turn
 
-    #  Castling rights: 4 bits
-    castling_tensor = np.array(
-        [
-            board.has_kingside_castling_rights(chess.WHITE),
-            board.has_queenside_castling_rights(chess.WHITE),
-            board.has_kingside_castling_rights(chess.BLACK),
-            board.has_queenside_castling_rights(chess.BLACK),
-        ],
-        dtype=np.uint8,
+    flattened[769:773] = (
+        board.has_kingside_castling_rights(chess.WHITE),
+        board.has_queenside_castling_rights(chess.WHITE),
+        board.has_kingside_castling_rights(chess.BLACK),
+        board.has_queenside_castling_rights(chess.BLACK),
     )
-
-    # En passant: 64-bit one-hot
-    ep_tensor = np.zeros(64, dtype=np.uint8)
+    flattened[773:] = 0
     if board.ep_square is not None:
-        ep_tensor[board.ep_square] = 1
+        flattened[773 + board.ep_square] = 1
 
-    # Flatten and concatenate all parts
-    full_vector = np.concatenate(
-        [piece_tensor.flatten(), turn_tensor, castling_tensor, ep_tensor]
-    )
-
-    return full_vector  # shape: (837,)
+    return flattened  # shape: (837,)
 
 
-def process_game(game: chess.pgn.Game) -> pd.DataFrame:
-    """Applies vectorization to each game"""
+def process_game(game: chess.pgn.Game) -> tuple[np.ndarray, list[str]]:
+    """Returns board state as tensor and next move for each move in the game"""
     board = game.board()
+
+    # Initialize here for each time to avoid recreating in memory for each move
+    pieces = np.zeros((8, 8, 12), dtype=np.uint8)
+    flattened = np.empty(837, dtype=np.uint8)
 
     board_vecs = []
     next_moves = []
 
     for move in game.mainline_moves():
-        board_vecs.append(fen_to_vector(board.fen()))
-        next_moves.append(board.san(move))
+        pieces.fill(0)
+
+        board_vecs.append(board_to_vector(board, pieces, flattened).copy())
+        next_moves.append(move.uci())
         board.push(move)
 
     if board_vecs and next_moves:
-        vecs = np.stack(board_vecs, axis=0)
-
-        df = pd.DataFrame(vecs, dtype=np.int8)
-        df["next_move"] = next_moves
-
-        return df
+        return np.stack(board_vecs, axis=0), next_moves
     else:
-        return pd.DataFrame()
+        return None
 
 
 def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
     """Apply pgn processing to a batch"""
     try:
-        data = []
+        save_location = Path(output_dir, f"batch_{batch_id}")
+        save_location.mkdir(parents=True, exist_ok=True)
+        board_vecs = []
+        next_moves = []
         for pgn in pgn_strs:
-            game = chess.pgn.read_game(io.StringIO(pgn))
-            if include_game(game):
-                df = process_game(game)
-                if not df.empty:
-                    data.append(df)
-        if data:
-            df = pd.concat(data)
-            df.to_parquet(Path(output_dir) / f"chunk_{batch_id}.parquet", index=False)
+            if include_game(pgn):
+                game = chess.pgn.read_game(io.StringIO(pgn))
+
+                result = process_game(game)
+                if result:
+                    board_vecs.append(result[0])
+                    next_moves.extend(result[1])
+
+        if board_vecs and next_moves:
+            vecs = np.concatenate(board_vecs, axis=0)
+            packed = np.packbits(vecs.flatten(), bitorder="little")
+            np.savez_compressed(
+                Path(save_location, "board_vecs"), shape=vecs.shape, data=packed
+            )
+
+            with open(Path(save_location, "next_moves.json"), "w") as f:
+                json.dump(next_moves, f, indent=4)
     except Exception as e:
         print(f"[Batch {batch_id}] Error: {e}")
-    return True
+    return len(pgn_strs)
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
     """Parses .pgn data, into batches for processing"""
     with open(pgn_path, encoding="utf-8") as f:
-        batch, current_pgn, last_line = [], "", ""
+        batch = []
+        current_pgn_lines = []
+        last_line = ""
         for line in f:
-            current_pgn += line
+            current_pgn_lines.append(line)
             if line.strip() == "" and not last_line.strip().endswith("]"):
+                current_pgn = "".join(current_pgn_lines)
                 batch.append(current_pgn)
-                current_pgn = ""
+                current_pgn_lines = []
                 if len(batch) == batch_size:
                     yield batch
                     batch = []
@@ -133,6 +133,7 @@ def stream_pgns(pgn_path: str, batch_size: int = 100):
 def process_pgn_parallel(
     pgn_path: str,
     output_dir: str,
+    *,
     max_games: int | None = None,
     num_workers: int = 8,
     batch_size: int = 25_000,
@@ -140,39 +141,42 @@ def process_pgn_parallel(
     """Processes data in parallel using generator and pool"""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    game_count = 0
+    total_submitted = total_done = 0
     batch_iter = stream_pgns(pgn_path, batch_size=batch_size)
-    futures = []
+    pbar = tqdm(total=max_games, unit="games") if max_games else tqdm(unit="games")
 
     with ProcessPoolExecutor(max_workers=num_workers) as pool:
+        pending = set()
+
         for batch_id, batch in enumerate(batch_iter):
-            if max_games and game_count >= max_games:
+            if max_games and total_submitted >= max_games:
                 break
+            if max_games:
+                batch = batch[: max_games - total_submitted]
 
-            # submit work
-            fut = pool.submit(process_batch, batch, output_dir, batch_id)
-            futures.append(fut)
-            game_count += len(batch)
+            pending.add(pool.submit(process_batch, batch, output_dir, batch_id))
+            total_submitted += len(batch)
 
-            # back‑pressure: don’t queue more than ~2× the worker count
-            if len(futures) > num_workers * 2:
-                _drain_completed(futures)
+            # Back‑pressure: keep at most 2×workers futures alive
+            while len(pending) >= num_workers * 2:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    cnt = fut.result()
+                    total_done += cnt
+                    pbar.update(cnt)
 
-        # wait for the stragglers
-        _drain_completed(futures, wait_all=True)
+        # Drain whatever is left
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in done:
+                cnt = fut.result()
+                total_done += cnt
+                pbar.update(cnt)
 
-    print(f"Finished ~{game_count} games into {batch_id + 1} parquet files.")
-
-
-def _drain_completed(futures, wait_all=False):
-    """Pop completed futures, propagating exceptions immediately."""
-    pending = []
-    for fut in futures:
-        if fut.done() or wait_all:
-            fut.result()  # raises if worker failed
-        else:
-            pending.append(fut)
-    futures[:] = pending
+    pbar.close()
+    print(
+        f"Finished {total_done} games in {batch_id + 1} batches using {num_workers} workers."
+    )
 
 
 if __name__ == "__main__":
@@ -182,7 +186,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pgn_path", type=str, default="data/lichess_db_standard_rated_2025-04.pgn"
     )
-    parser.add_argument("--output_dir", type=str, default="data/parallel")
+    parser.add_argument("--output_dir", type=str, default="data/split_data")
     parser.add_argument("--max_games", type=int, default=None)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--batch_size", type=int, default=25000)
