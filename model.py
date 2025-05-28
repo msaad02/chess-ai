@@ -1,6 +1,5 @@
-from dataset import get_dataset, get_target_mappings
-from torch.utils.data import TensorDataset, DataLoader, random_split
-from tqdm.notebook import tqdm
+from torch.utils.data import DataLoader, random_split
+from dataset import LichessDataset
 import torch
 import wandb
 
@@ -10,24 +9,19 @@ num_epochs = 256
 
 learning_rate = 0.0001
 
-# -- Dataset ----------------------------------
-x, y = get_dataset()
+# ----- Dataset ----------------------------------
 
-move_to_idx, idx_to_move = get_target_mappings(y)
-
-# Convert to tensor and apply target mapping
-x = torch.from_numpy(x.to_numpy()).to(torch.float32)
-y = torch.from_numpy(y.map(move_to_idx).to_numpy())
-
-dataset = TensorDataset(x, y)
+dataset = LichessDataset("data/split_data")
 
 train_data, test_data = random_split(dataset, [0.8, 0.2])
 
-train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+train_loader = DataLoader(train_data, batch_size=batch_size)
 test_loader = DataLoader(test_data, batch_size=batch_size)
 
+idx_to_move = dataset.move_to_idx
 
-# -- Model -----------------------------------
+
+# ----- Model -----------------------------------
 class ImitationModel(torch.nn.Module):
     def __init__(self, in_features, out_features):
         super(ImitationModel, self).__init__()
@@ -50,10 +44,13 @@ class ImitationModel(torch.nn.Module):
         return x
 
 
-model = ImitationModel(in_features=x.shape[1], out_features=len(idx_to_move)).to(device)
+model = ImitationModel(
+    in_features=837, 
+    out_features=len(idx_to_move)
+).to(device)
 
 
-# -- Logging -----------------------------------
+# ----- Logging -----------------------------------
 run = wandb.init(
     entity="chess-ai",
     project="Imitation-Model",
@@ -67,7 +64,7 @@ run = wandb.init(
 )
 
 
-# -- Training -----------------------------------
+# ----- Training -----------------------------------
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
 loss_fn = torch.nn.CrossEntropyLoss()
