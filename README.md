@@ -1,3 +1,5 @@
-# Chess Bot
+# Final-Project-AI-ML
 
-Side project chess bot. Imitation learning from lichess games, and reinforcement learning with self-play.
+Chess Bot GUI for user vs basic minimax bot.
+
+Soon *should* be fairly good
