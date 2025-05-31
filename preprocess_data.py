@@ -3,6 +3,7 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import chess.pgn
+import shutil
 import json
 import io
 
@@ -83,31 +84,34 @@ def process_game(game: chess.pgn.Game) -> tuple[np.ndarray, list[str]]:
 def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
     """Apply pgn processing to a batch"""
     try:
-        save_location = Path(output_dir, f"batch_{batch_id}")
-        save_location.mkdir(parents=True, exist_ok=True)
-        board_vecs = []
-        next_moves = []
+        inputs = []
+        targets = []
+
         for pgn in pgn_strs:
             if include_game(pgn):
                 game = chess.pgn.read_game(io.StringIO(pgn))
 
                 result = process_game(game)
                 if result:
-                    board_vecs.append(result[0])
-                    next_moves.extend(result[1])
+                    inputs.append(result[0])
+                    targets.extend(result[1])
 
-        if board_vecs and next_moves:
-            vecs = np.concatenate(board_vecs, axis=0)
-            packed = np.packbits(vecs.flatten(), bitorder="little")
+        if inputs and targets:
+            rand = np.random.permutation(len(targets))
+
+            inputs = np.concatenate(inputs, axis=0)[rand]
+            targets = np.array(targets, dtype="<U5")[rand]
+            del rand
+
             np.savez_compressed(
-                Path(save_location, "board_vecs"), shape=vecs.shape, data=packed
+                file=Path(output_dir, f"batch_{batch_id}"),
+                inputs=inputs,
+                targets=targets,
             )
-
-            with open(Path(save_location, "next_moves.json"), "w") as f:
-                json.dump(next_moves, f, indent=4)
+            return len(pgn_strs), set(targets)
     except Exception as e:
         print(f"[Batch {batch_id}] Error: {e}")
-    return len(pgn_strs)
+    return len(pgn_strs), set()
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
@@ -139,11 +143,17 @@ def process_pgn_parallel(
     batch_size: int = 25_000,
 ):
     """Processes data in parallel using generator and pool"""
+    save_location = Path(output_dir)
+    
+    if save_location.exists() and save_location.is_dir():
+        shutil.rmtree(save_location)
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     total_submitted = total_done = 0
     batch_iter = stream_pgns(pgn_path, batch_size=batch_size)
     pbar = tqdm(total=max_games, unit="games") if max_games else tqdm(unit="games")
+    all_distinct_moves = set()
 
     with ProcessPoolExecutor(max_workers=num_workers) as pool:
         pending = set()
@@ -161,17 +171,23 @@ def process_pgn_parallel(
             while len(pending) >= num_workers * 2:
                 done, pending = wait(pending, return_when=FIRST_COMPLETED)
                 for fut in done:
-                    cnt = fut.result()
+                    cnt, next_moves = fut.result()
                     total_done += cnt
+                    all_distinct_moves.update(next_moves)
                     pbar.update(cnt)
 
         # Drain whatever is left
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
             for fut in done:
-                cnt = fut.result()
+                cnt, next_moves = fut.result()
                 total_done += cnt
+                all_distinct_moves.update(next_moves)
                 pbar.update(cnt)
+
+    # Writeout distinct moves
+    with open(save_location / "distinct_moves.json", "w") as f:
+        json.dump({idx: move for idx, move in enumerate(all_distinct_moves)}, f)
 
     pbar.close()
     print(
