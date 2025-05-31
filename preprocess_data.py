@@ -144,7 +144,7 @@ def process_pgn_parallel(
 ):
     """Processes data in parallel using generator and pool"""
     save_location = Path(output_dir)
-    
+
     if save_location.exists() and save_location.is_dir():
         shutil.rmtree(save_location)
 

@@ -1,4 +1,5 @@
 from torch.utils.data import IterableDataset, get_worker_info
+from typing import Generator
 from pathlib import Path
 import numpy as np
 import torch
@@ -16,28 +17,32 @@ class LichessDataset(IterableDataset):
 
         self.move_to_idx = {move: idx for idx, move in self.idx_to_move.items()}
 
-        self.get_target_id = np.vectorize(self.move_to_idx.__getitem__, otypes=[np.int32])
+        self.get_target_id = np.vectorize(
+            self.move_to_idx.__getitem__, otypes=[np.int32]
+        )
 
     def _get_rows_from_batch(self, batch: Path | str):
 
         metadata = np.load(batch, mmap_mode="r")
 
-        inputs = torch.from_numpy(metadata["inputs"])
-        targets = torch.from_numpy(self.get_target_id(metadata["targets"]))
+        inputs = torch.as_tensor(metadata["inputs"], dtype=torch.float32)
+        targets = torch.as_tensor(
+            self.get_target_id(metadata["targets"]), dtype=torch.int64
+        )
 
-        for batch_idx in range(targets.shape[0] // self.batch_size):
-            
-            start_idx = batch_idx * self.batch_size
-            end_idx = (batch_idx + 1) * self.batch_size
+        for start in range(0, len(targets), self.batch_size):
+            end = start + self.batch_size
+            if end > len(targets):
+                break
 
-            yield inputs[start_idx], targets[end_idx]
+            yield inputs[start:end], targets[start:end]
 
     def __iter__(self):
 
         info = get_worker_info()
 
         if info:
-            my_batches = self.batches[info.id::info.num_workers]
+            my_batches = self.batches[info.id :: info.num_workers]
         else:
             my_batches = self.batches
 

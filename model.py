@@ -1,52 +1,48 @@
 from torch.utils.data import DataLoader
-from dataset import LichessStream, collate
+from dataset import LichessDataset
 from pathlib import Path
 import torch
 import wandb
+import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 75000
+batch_size = 40000
 num_epochs = 8
 
 learning_rate = 0.0001
 
 # ----- Dataset ----------------------------------
 
-# Get the batches of preprocessed data
 batches = list(Path("data/split_data").glob("batch_*"))
+target_mappings = Path("data/split_data/distinct_moves.json")
 
-# Create train/test split
 split = int(0.8 * len(batches))
 
-# train_stream = LichessStream(batches=batches[:split])
-# valid_stream = LichessStream(batches=batches[split:])
-
-train_stream = LichessStream(batches=batches[:1])
-valid_stream = LichessStream(batches=batches[1:2])
-
-train_loader = DataLoader(
-    train_stream,
-    batch_size=batch_size,
-    # num_workers=3,
-    collate_fn=collate,
-    # prefetch_factor=4,
-    pin_memory=True,
-    drop_last=True,
+train_dataset = LichessDataset(
+    batches=batches[:1], target_mappings=target_mappings, batch_size=batch_size
+)
+valid_dataset = LichessDataset(
+    batches=batches[1:2], target_mappings=target_mappings, batch_size=batch_size
 )
 
-valid_loader = DataLoader(
-    valid_stream,
-    batch_size=batch_size,
-    # num_workers=1,
-    collate_fn=collate,
-    # prefetch_factor=4,
+train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=None,
+    num_workers=4,
+    prefetch_factor=2,
     pin_memory=True,
-    drop_last=True,
 )
 
+valid_dataloader = DataLoader(
+    valid_dataset,
+    batch_size=None,
+    num_workers=4,
+    prefetch_factor=2,
+    pin_memory=True,
+)
 
-# Need to come up with a unified "vocab"
-idx_to_move = train_stream.idx_to_move
+with open(target_mappings, "r") as f:
+    idx_to_move = json.load(f)
 
 
 # ----- Model -----------------------------------
@@ -61,7 +57,7 @@ class ImitationModel(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(10_000, 5_000),
             torch.nn.ReLU(),
-            torch.nn.Linear(5_000, out_features)
+            torch.nn.Linear(5_000, out_features),
         )
 
     def forward(self, x):
@@ -69,10 +65,14 @@ class ImitationModel(torch.nn.Module):
         return x
 
 
-model = ImitationModel(in_features=837, out_features=len(idx_to_move)).to(device)
+model = ImitationModel(in_features=837, out_features=len(idx_to_move)).cuda()
+
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+loss_fn = torch.nn.CrossEntropyLoss()
 
 
-# ----- Logging -----------------------------------
+# ---- Logging ---------------------------------
 run = wandb.init(
     entity="chess-ai",
     project="Imitation-Model",
@@ -86,68 +86,67 @@ run = wandb.init(
 )
 
 
-# ----- Training -----------------------------------
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-loss_fn = torch.nn.CrossEntropyLoss()
-
-scaler = torch.amp.GradScaler()
+# ---- Training ---------------------------------
 
 for epoch in range(num_epochs):
-
-    # ---- TRAIN ----
     model.train()
-    train_loss = train_correct = train_seen = 0
 
-    for batch_x, batch_y in train_loader:
-        batch_x, batch_y = batch_x.to(device, dtype=torch.float32), batch_y.to(device).long()
+    report_every = 10
+    running_loss = 0.0
+    running_correct = 0
+    running_total = 0
 
-        with torch.amp.autocast(device_type=str(device)):
-            preds = model(batch_x)
-            loss  = loss_fn(preds, batch_y)
+    for batch_idx, (inputs, targets) in enumerate(train_dataloader):
+        inputs = inputs.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
 
         optimizer.zero_grad()
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
 
-        train_loss += loss.item() * batch_y.size(0)
+        # accumulate
+        running_loss += loss.item() * targets.size(0)  # sum, not mean
+        running_correct += (outputs.argmax(1) == targets).sum().item()
+        running_total += targets.size(0)
 
-        batch_correct = (preds.argmax(dim=1) == batch_y).sum().item()
-        batch_seen = batch_y.size(0)
+        if (batch_idx + 1) % report_every == 0:
+            run.log(
+                {
+                    "train/loss": running_loss / running_total,
+                    "train/acc%": running_correct / running_total * 100,
+                }
+            )
+            running_loss = running_correct = running_total = 0
 
-        train_correct += batch_correct
-        train_seen += batch_seen
-
-        run.log({"train/batch_loss": loss.item(), "train/batch_acc": batch_correct / batch_seen * 100.0})
-
-    epoch_train_loss = train_loss / train_seen
-    epoch_train_acc  = train_correct / train_seen * 100
-
-    # ---- VAL ----
+    # ---------- VALIDATION ----------
     model.eval()
-    val_loss = val_correct = val_seen = 0
-    with torch.no_grad(), torch.amp.autocast(device_type=str(device)):
-        for batch_x, batch_y in valid_loader:
-            batch_x, batch_y = batch_x.to(device, dtype=torch.float32), batch_y.to(device).long()
-            preds = model(batch_x)
-            loss  = loss_fn(preds, batch_y)
+    val_loss = val_correct = val_total = 0
 
-            val_loss   += loss.item() * batch_y.size(0)
-            val_correct += (preds.argmax(1) == batch_y).sum().item()
-            val_seen   += batch_y.size(0)
+    with torch.no_grad():
+        for v_inputs, v_targets in valid_dataloader:
+            v_inputs = v_inputs.to(device, non_blocking=True)
+            v_targets = v_targets.to(device, non_blocking=True)
 
-    epoch_val_loss = val_loss / val_seen
-    epoch_val_acc  = val_correct / val_seen * 100
+            preds = model(v_inputs)
+            loss = loss_fn(preds, v_targets)
 
-    run.log({
-        "epoch": epoch,
-        "train/loss": epoch_train_loss,
-        "train/acc":  epoch_train_acc,
-        "val/loss":   epoch_val_loss,
-        "val/acc":    epoch_val_acc,
-        "lr": optimizer.param_groups[0]["lr"],
-    })
+            val_loss += loss.item() * v_targets.size(0)
+            val_correct += (preds.argmax(1) == v_targets).sum().item()
+            val_total += v_targets.size(0)
+
+    run.log(
+        {
+            "epoch": epoch,
+            "lr": optimizer.param_groups[0]["lr"],
+            "val/loss": val_loss / val_total,
+            "val/acc%": val_correct / val_total * 100,
+        }
+    )
+
+
+torch.save(model.state_dict(), Path("models/v1"))
 
 
 run.finish()
