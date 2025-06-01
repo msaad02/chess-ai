@@ -2,3 +2,5 @@ data/
 wandb/
 __pycache__/
 models/
+
+.env
