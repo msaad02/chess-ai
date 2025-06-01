@@ -7,37 +7,37 @@ import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch_size = 40000
-num_epochs = 8
+num_epochs = 2
 
 learning_rate = 0.0001
 
 # ----- Dataset ----------------------------------
 
-batches = list(Path("data/split_data").glob("batch_*"))
+batches = list(Path("data/split_data").glob("batch_*"))[:20]
 target_mappings = Path("data/split_data/distinct_moves.json")
 
 split = int(0.8 * len(batches))
 
 train_dataset = LichessDataset(
-    batches=batches[:1], target_mappings=target_mappings, batch_size=batch_size
+    batches=batches[:split], target_mappings=target_mappings, batch_size=batch_size
 )
 valid_dataset = LichessDataset(
-    batches=batches[1:2], target_mappings=target_mappings, batch_size=batch_size
+    batches=batches[split:], target_mappings=target_mappings, batch_size=batch_size
 )
 
 train_dataloader = DataLoader(
     train_dataset,
     batch_size=None,
     num_workers=4,
-    prefetch_factor=2,
+    prefetch_factor=3,
     pin_memory=True,
 )
 
 valid_dataloader = DataLoader(
     valid_dataset,
     batch_size=None,
-    num_workers=4,
-    prefetch_factor=2,
+    num_workers=2,
+    prefetch_factor=1,
     pin_memory=True,
 )
 
