@@ -1,11 +1,15 @@
+"""
+Processes pgn file to vectorized numpy objects in batches
+"""
+
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
-from tqdm import tqdm
-import numpy as np
-import chess.pgn
 import shutil
 import json
 import io
+from tqdm import tqdm
+import numpy as np
+import chess.pgn
 
 
 def include_game(pgn_str: str, min_elo: int = 1500) -> bool:
@@ -13,24 +17,23 @@ def include_game(pgn_str: str, min_elo: int = 1500) -> bool:
 
     Used chess.pgn.Game before, but regex is more *far* more performant.
     """
-    try:
-        tmp = pgn_str.split("\n\n")[0].split("\n")
-        tmp = [x.replace("[", "").replace("]", "") for x in tmp]
-        headers = {k.strip(): v for k, v in [x.split('"')[:2] for x in tmp]}
+    tmp = pgn_str.split("\n\n")[0].split("\n")
+    tmp = [x.replace("[", "").replace("]", "") for x in tmp]
+    headers = {k.strip(): v for k, v in [x.split('"')[:2] for x in tmp]}
 
-        return all(
-            [
-                headers["Termination"] == "Normal",
-                int(headers["WhiteElo"]) > min_elo,
-                int(headers["BlackElo"]) > min_elo,
-            ]
-        )
-    except:
-        return False
+    return all(
+        [
+            headers["Termination"] == "Normal",
+            int(headers["WhiteElo"]) > min_elo,
+            int(headers["BlackElo"]) > min_elo,
+        ]
+    )
 
 
 def board_to_vector(
-    board: chess.Board, piece_tensor: np.ndarray, flattened: np.ndarray
+    board: chess.Board,
+    piece_tensor: np.ndarray = np.zeros((8, 8, 12), dtype=np.uint8),
+    flattened: np.ndarray = np.empty(837, dtype=np.uint8),
 ) -> np.ndarray:
     """Converts chess.Board object to vector. Tensor parameters included to avoid recreation"""
 
@@ -83,35 +86,31 @@ def process_game(game: chess.pgn.Game) -> tuple[np.ndarray, list[str]]:
 
 def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
     """Apply pgn processing to a batch"""
-    try:
-        inputs = []
-        targets = []
+    inputs = []
+    targets = []
 
-        for pgn in pgn_strs:
-            if include_game(pgn):
-                game = chess.pgn.read_game(io.StringIO(pgn))
+    for pgn in pgn_strs:
+        if include_game(pgn):
+            game = chess.pgn.read_game(io.StringIO(pgn))
 
-                result = process_game(game)
-                if result:
-                    inputs.append(result[0])
-                    targets.extend(result[1])
+            result = process_game(game)
+            if result:
+                inputs.append(result[0])
+                targets.extend(result[1])
 
-        if inputs and targets:
-            rand = np.random.permutation(len(targets))
+    if inputs and targets:
+        rand = np.random.permutation(len(targets))
 
-            inputs = np.concatenate(inputs, axis=0)[rand]
-            targets = np.array(targets, dtype="<U5")[rand]
-            del rand
+        inputs = np.concatenate(inputs, axis=0)[rand]
+        targets = np.array(targets, dtype="<U5")[rand]
+        del rand
 
-            np.savez_compressed(
-                file=Path(output_dir, f"batch_{batch_id}"),
-                inputs=inputs,
-                targets=targets,
-            )
-            return len(pgn_strs), set(targets)
-    except Exception as e:
-        print(f"[Batch {batch_id}] Error: {e}")
-    return len(pgn_strs), set()
+        np.savez_compressed(
+            file=Path(output_dir, f"batch_{batch_id}"),
+            inputs=inputs,
+            targets=targets,
+        )
+        return len(pgn_strs), set(targets)
 
 
 def stream_pgns(pgn_path: str, batch_size: int = 100):
@@ -150,7 +149,7 @@ def process_pgn_parallel(
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    total_submitted = total_done = 0
+    total_submitted = total_done = num_batches = 0
     batch_iter = stream_pgns(pgn_path, batch_size=batch_size)
     pbar = tqdm(total=max_games, unit="games") if max_games else tqdm(unit="games")
     all_distinct_moves = set()
@@ -176,6 +175,8 @@ def process_pgn_parallel(
                     all_distinct_moves.update(next_moves)
                     pbar.update(cnt)
 
+            num_batches += 1
+
         # Drain whatever is left
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -186,12 +187,12 @@ def process_pgn_parallel(
                 pbar.update(cnt)
 
     # Writeout distinct moves
-    with open(save_location / "distinct_moves.json", "w") as f:
+    with open(save_location / "distinct_moves.json", "w", encoding="utf-8") as f:
         json.dump({idx: move for idx, move in enumerate(all_distinct_moves)}, f)
 
     pbar.close()
     print(
-        f"Finished {total_done} games in {batch_id + 1} batches using {num_workers} workers."
+        f"Finished {total_done} games in {num_batches} batches using {num_workers} workers."
     )
 
 

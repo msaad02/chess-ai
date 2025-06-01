@@ -1,15 +1,19 @@
-from torch.utils.data import DataLoader
-from dataset import LichessDataset
+"""
+Trainigs imitation learning model
+"""
+
+import json
 from pathlib import Path
+from torch.utils.data import DataLoader
 import torch
 import wandb
-import json
+from dataset import LichessDataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-batch_size = 40000
-num_epochs = 2
+BATCH_SIZE = 40000
+NUM_EPOCHS = 2
 
-learning_rate = 0.0001
+LEARNING_RATE = 0.0001
 
 # ----- Dataset ----------------------------------
 
@@ -19,10 +23,10 @@ target_mappings = Path("data/split_data/distinct_moves.json")
 split = int(0.8 * len(batches))
 
 train_dataset = LichessDataset(
-    batches=batches[:split], target_mappings=target_mappings, batch_size=batch_size
+    batches=batches[:split], target_mappings=target_mappings, batch_size=BATCH_SIZE
 )
 valid_dataset = LichessDataset(
-    batches=batches[split:], target_mappings=target_mappings, batch_size=batch_size
+    batches=batches[split:], target_mappings=target_mappings, batch_size=BATCH_SIZE
 )
 
 train_dataloader = DataLoader(
@@ -41,12 +45,14 @@ valid_dataloader = DataLoader(
     pin_memory=True,
 )
 
-with open(target_mappings, "r") as f:
+with open(target_mappings, "r", encoding="utf-8") as f:
     idx_to_move = json.load(f)
 
 
 # ----- Model -----------------------------------
 class ImitationModel(torch.nn.Module):
+    """Simple MLP for chess imitation model"""
+
     def __init__(self, in_features, out_features):
         super(ImitationModel, self).__init__()
 
@@ -61,13 +67,14 @@ class ImitationModel(torch.nn.Module):
         )
 
     def forward(self, x):
+        """Forward pass on model"""
         x = self.seq(x)
         return x
 
 
 model = ImitationModel(in_features=837, out_features=len(idx_to_move)).cuda()
 
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 loss_fn = torch.nn.CrossEntropyLoss()
 
@@ -78,9 +85,9 @@ run = wandb.init(
     project="Imitation-Model",
     config={
         "architecture": "MLP",
-        "learning_rate": learning_rate,
-        "batch_size": batch_size,
-        "epochs": num_epochs,
+        "learning_rate": LEARNING_RATE,
+        "batch_size": BATCH_SIZE,
+        "epochs": NUM_EPOCHS,
         "num_params": sum(p.numel() for p in model.parameters()),
     },
 )
@@ -88,13 +95,13 @@ run = wandb.init(
 
 # ---- Training ---------------------------------
 
-for epoch in range(num_epochs):
+for epoch in range(NUM_EPOCHS):
     model.train()
 
-    report_every = 10
-    running_loss = 0.0
-    running_correct = 0
-    running_total = 0
+    REPORT_EVERY = 10
+    RUNNING_LOSS = 0.0
+    RUNNING_CORRECT = 0
+    RUNNING_TOTAL = 0
 
     for batch_idx, (inputs, targets) in enumerate(train_dataloader):
         inputs = inputs.to(device, non_blocking=True)
@@ -107,22 +114,22 @@ for epoch in range(num_epochs):
         optimizer.step()
 
         # accumulate
-        running_loss += loss.item() * targets.size(0)  # sum, not mean
-        running_correct += (outputs.argmax(1) == targets).sum().item()
-        running_total += targets.size(0)
+        RUNNING_LOSS += loss.item() * targets.size(0)  # sum, not mean
+        RUNNING_CORRECT += (outputs.argmax(1) == targets).sum().item()
+        RUNNING_TOTAL += targets.size(0)
 
-        if (batch_idx + 1) % report_every == 0:
+        if (batch_idx + 1) % REPORT_EVERY == 0:
             run.log(
                 {
-                    "train/loss": running_loss / running_total,
-                    "train/acc%": running_correct / running_total * 100,
+                    "train/loss": RUNNING_LOSS / RUNNING_TOTAL,
+                    "train/acc%": RUNNING_CORRECT / RUNNING_TOTAL * 100,
                 }
             )
-            running_loss = running_correct = running_total = 0
+            RUNNING_LOSS = RUNNING_CORRECT = RUNNING_TOTAL = 0
 
     # ---------- VALIDATION ----------
     model.eval()
-    val_loss = val_correct = val_total = 0
+    VAL_LOSS = VAL_CORRECT = VAL_TOTAL = 0
 
     with torch.no_grad():
         for v_inputs, v_targets in valid_dataloader:
@@ -132,16 +139,16 @@ for epoch in range(num_epochs):
             preds = model(v_inputs)
             loss = loss_fn(preds, v_targets)
 
-            val_loss += loss.item() * v_targets.size(0)
-            val_correct += (preds.argmax(1) == v_targets).sum().item()
-            val_total += v_targets.size(0)
+            VAL_LOSS += loss.item() * v_targets.size(0)
+            VAL_CORRECT += (preds.argmax(1) == v_targets).sum().item()
+            VAL_TOTAL += v_targets.size(0)
 
     run.log(
         {
             "epoch": epoch,
             "lr": optimizer.param_groups[0]["lr"],
-            "val/loss": val_loss / val_total,
-            "val/acc%": val_correct / val_total * 100,
+            "val/loss": VAL_LOSS / VAL_TOTAL,
+            "val/acc%": VAL_CORRECT / VAL_TOTAL * 100,
         }
     )
 
