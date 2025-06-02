@@ -2,5 +2,6 @@ data/
 wandb/
 __pycache__/
 models/
+lichess/
 
-.env
+config.yml
