@@ -2,4 +2,3 @@ data/
 wandb/
 __pycache__/
 models/
-lichess/
