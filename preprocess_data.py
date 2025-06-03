@@ -10,6 +10,7 @@ import io
 from tqdm import tqdm
 import numpy as np
 import chess.pgn
+from utils import board_to_vector
 
 
 def include_game(pgn_str: str, min_elo: int = 1500) -> bool:
