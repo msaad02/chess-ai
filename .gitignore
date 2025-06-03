@@ -3,5 +3,3 @@ wandb/
 __pycache__/
 models/
 lichess/
-
-config.yml
