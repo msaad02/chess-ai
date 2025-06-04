@@ -342,7 +342,7 @@ def train_model(
     torch.save(model.state_dict(), model_save_dir / "model.pt")
 
     with open(model_save_dir / "target_mapping.json", "w", encoding="utf-8") as f:
-        json.dumps(idx_to_move, indent=4)
+        json.dump(idx_to_move, f, indent=4)
 
     if wandb_run:
         wandb_run.finish()
