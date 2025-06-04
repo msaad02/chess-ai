@@ -376,5 +376,6 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         proportion_train=args.proportion_train,
         device=args.device,
+        report_to_wandb=args.report_to_wandb,
         max_num_batches=args.max_num_batches,
     )
