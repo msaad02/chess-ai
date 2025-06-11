@@ -248,43 +248,27 @@ def train_model(
     device: str = "cuda",
     report_to_wandb: bool = False,
     max_num_batches: int = -1,
+    continue_training: bool = False,
 ):
-    """
-    Oversees model training for provided dataset.
-
-    Parameters
-    ----------
-    model_save_dir: Path
-        Directory to save model and idx to target mappings
-    split_data_dir : Path
-        Directory containing batch_XX.npz files.
-    distinct_moves_path : Path
-        Path to JSON file mapping indices to UCI moves.
-    batch_size : int
-        Batch size used for training.
-    num_epochs : int
-        Number of epochs to train the model for.
-    learning_rate : float
-        Learning rate to use for optimizer.
-    proportion_train : float, optional
-        Proportion of data used for training vs validation (default is 0.8).
-    device : str, optional
-        Device to run training on (e.g. 'cuda' or 'cpu').
-    report_to_wandb : bool, optional
-        Whether to report model training information to weight and biases website.
-    max_num_batches : int, optional
-        If != -1, will filter to max_num_batches batches for training/validation.
-    """
-
     with open(distinct_moves_path, "r", encoding="utf-8") as f:
         idx_to_move = json.load(f)
 
     model = ImitationModel(in_features=837, out_features=len(idx_to_move))
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    start_epoch = 0
+    wandb_run = None
+    wandb_run_id = None
+
+    if continue_training:
+        checkpoint = torch.load(model_save_dir / "checkpoint.pt")
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+        num_epochs += start_epoch
+        wandb_run_id = checkpoint.get("wandb_run_id")
 
     if device == "cuda":
         model = model.cuda()
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     loss_fn = torch.nn.CrossEntropyLoss()
 
@@ -300,6 +284,8 @@ def train_model(
         wandb_run = wandb.init(
             entity="chess-ai",
             project="Imitation-Model",
+            resume="allow" if continue_training else None,
+            id=wandb_run_id,
             config={
                 "architecture": "MLP",
                 "learning_rate": learning_rate,
@@ -308,12 +294,10 @@ def train_model(
                 "num_params": sum(p.numel() for p in model.parameters()),
             },
         )
-    else:
-        wandb_run = None
+        wandb_run_id = wandb_run.id
 
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
 
-        # Perform training for this epoch
         model, optimizer = training_loop(
             dataloader=train_dataloader,
             model=model,
@@ -323,7 +307,6 @@ def train_model(
             wandb_run=wandb_run,
         )
 
-        # Check validation performance for this epoch
         validation_loop(
             dataloader=valid_dataloader,
             model=model,
@@ -333,18 +316,22 @@ def train_model(
             wandb_run=wandb_run,
         )
 
-        if wandb_run:
+        if report_to_wandb:
             wandb_run.log({"epoch": epoch})
 
-    # Save the model and target map
-    model_save_dir.mkdir(parents=True, exist_ok=True)
+        model_save_dir.mkdir(parents=True, exist_ok=True)
+        
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "wandb_run_id": wandb_run_id,
+            },
+            model_save_dir / "checkpoint.pt",
+        )
 
-    torch.save(model.state_dict(), model_save_dir / "model.pt")
-
-    with open(model_save_dir / "target_mapping.json", "w", encoding="utf-8") as f:
-        json.dump(idx_to_move, f, indent=4)
-
-    if wandb_run:
+    if report_to_wandb:
         wandb_run.finish()
 
 
@@ -364,7 +351,8 @@ if __name__ == "__main__":
     parser.add_argument("--proportion_train", type=float, default=0.85)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--report_to_wandb", type=bool, default=True)
-    parser.add_argument("--max_num_batches", type=int, default=None)
+    parser.add_argument("--max_num_batches", type=int, default=-1)
+    parser.add_argument("--continue_training", type=bool, default=False)
     args = parser.parse_args()
 
     train_model(
@@ -378,4 +366,5 @@ if __name__ == "__main__":
         device=args.device,
         report_to_wandb=args.report_to_wandb,
         max_num_batches=args.max_num_batches,
+        continue_training=args.continue_training,
     )
