@@ -31,7 +31,7 @@ def include_game(pgn_str: str, min_elo: int = 1500) -> bool:
     )
 
 
-def process_game(game: chess.pgn.Game) -> tuple[np.ndarray, list[str]]:
+def process_game(game: chess.pgn.Game) -> tuple[np.ndarray, list[str]] | None:
     """Returns board state as tensor and next move for each move in the game"""
     board = game.board()
 
@@ -63,11 +63,11 @@ def process_batch(pgn_strs: list[str], output_dir: str, batch_id: int):
     for pgn in pgn_strs:
         if include_game(pgn):
             game = chess.pgn.read_game(io.StringIO(pgn))
-
-            result = process_game(game)
-            if result:
-                inputs.append(result[0])
-                targets.extend(result[1])
+            if game:
+                result = process_game(game)
+                if result:
+                    inputs.append(result[0])
+                    targets.extend(result[1])
 
     if inputs and targets:
         rand = np.random.permutation(len(targets))
