@@ -1,7 +1,8 @@
 """
 The following functions are used in multiple scripts, hence
-why they're stored here in the utils file 
+why they're stored here in the utils file
 """
+
 import numpy as np
 import chess
 

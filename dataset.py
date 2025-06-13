@@ -12,6 +12,7 @@ import torch
 
 class LichessDataset(IterableDataset):
     """Streaming dataset for vectorized chess games"""
+
     def __init__(self, batches: list[Path], target_mappings: Path, batch_size: int):
 
         self.batches = batches

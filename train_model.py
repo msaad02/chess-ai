@@ -250,6 +250,35 @@ def train_model(
     max_num_batches: int = -1,
     continue_training: bool = False,
 ):
+    """
+    End-to-end training loop: loads data, initializes model, trains for multiple epochs,
+    evaluates, logs metrics, and saves model artifacts.
+
+    Parameters
+    ----------
+    model_save_dir : Path
+        Directory where the trained model and checkpoints will be saved.
+    split_data_dir : Path
+        Directory containing pre-split .npz files for training and validation.
+    distinct_moves_path : Path
+        Path to JSON file mapping indices to UCI moves.
+    batch_size : int
+        Number of samples to load per batch (used internally in dataset).
+    num_epochs : int
+        Total number of training epochs.
+    learning_rate : float
+        Learning rate for the optimizer.
+    proportion_train : float, optional
+        Proportion of batches to use for training (default is 0.8).
+    device : str, optional
+        Device on which to perform training (default is "cuda").
+    report_to_wandb : bool, optional
+        Whether to log metrics to Weights & Biases (default is False).
+    max_num_batches : int, optional
+        If != -1, will filter to max_num_batches batches for training/validation.
+    continue_training : bool, optional
+        If True, will load the last checkpoint and continue training from there (default is False).
+    """
     with open(distinct_moves_path, "r", encoding="utf-8") as f:
         idx_to_move = json.load(f)
 
@@ -316,11 +345,11 @@ def train_model(
             wandb_run=wandb_run,
         )
 
-        if report_to_wandb:
+        if report_to_wandb and wandb_run is not None:
             wandb_run.log({"epoch": epoch})
 
         model_save_dir.mkdir(parents=True, exist_ok=True)
-        
+
         torch.save(
             {
                 "epoch": epoch,
@@ -331,7 +360,7 @@ def train_model(
             model_save_dir / "checkpoint.pt",
         )
 
-    if report_to_wandb:
+    if report_to_wandb and wandb_run is not None:
         wandb_run.finish()
 
 

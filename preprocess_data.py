@@ -159,7 +159,7 @@ def process_pgn_parallel(
 
     # Writeout distinct moves
     with open(save_location / "distinct_moves.json", "w", encoding="utf-8") as f:
-        json.dump({idx: move for idx, move in enumerate(all_distinct_moves)}, f)
+        json.dump(dict(enumerate(all_distinct_moves)), f)
 
     pbar.close()
     print(
