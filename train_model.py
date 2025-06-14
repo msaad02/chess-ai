@@ -91,9 +91,10 @@ def get_split_dataloader(
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=None,
-        num_workers=4,
+        num_workers=3,
         prefetch_factor=3,
         pin_memory=True,
+        persistent_workers=True
     )
 
     valid_dataloader = DataLoader(

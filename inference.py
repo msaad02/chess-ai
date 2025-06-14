@@ -30,7 +30,7 @@ class ChessAIBot(MinimalEngine):
     def _init_model(self):
         """__init__ isn't working as expected. Manually init model as workaround"""
 
-        model_path = Path("/home/msaad/workspace/chess-ai/models/v1")
+        model_path = Path("/home/msaad/workspace/chess-ai/models/model_v2/checkpoint.pt")
         target_mapping_path = Path(
             "/home/msaad/workspace/chess-ai/data/split_data/distinct_moves.json"
         )
@@ -39,7 +39,7 @@ class ChessAIBot(MinimalEngine):
             target_map = json.load(f)
 
         self.model = ImitationModel(837, len(target_map))
-        self.model.load_state_dict(torch.load(Path(model_path), weights_only=True))
+        self.model.load_state_dict(torch.load(Path(model_path), weights_only=True)["model_state_dict"])
 
         self.model.eval()
 
